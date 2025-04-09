@@ -1,19 +1,18 @@
 use __internals::{
     apply_rename_rule, DataKind, EnumInfo, EnumRepresentation, FieldInfo, FieldsInfo,
-    PrimitiveType, ReflectTo, RenameRuleValue, StructInfo, TypeAttributes, TypeInfo, TypeRef,
-    VariantInfo,
+    PrimitiveType, Reflection, RenameRuleValue, StructInfo, TypeAttributes, TypeInfo, TypeRef,
+    TypeRegistry, VariantInfo,
 };
 
 use std::{
     any::TypeId,
     collections::{BTreeMap, HashMap, HashSet},
+    error::Error,
     fs::File,
     io::{self, Write},
     path::Path,
 };
 use thiserror::Error;
-
-// --- `reflect_to` Re-exports --
 
 // --- Error Handling ---
 #[derive(Error, Debug)]
@@ -28,127 +27,86 @@ pub enum ToTypeScriptError {
     GenerationFailed(String, String),
     #[error("Type with ID {0:?} not found in registry. Was it added?")]
     TypeNotFound(TypeId),
+    #[error("Dependency Error: {0}")]
+    Dependency(String),
 }
 
-/// Generates TypeScript definitions from Rust types implementing `ReflectTo`.
+pub type ModuleName = String;
+pub type TypeName = String;
+pub type TypeKey = (ModuleName, TypeName);
+
+/// Generates TypeScript definitions from Rust types implementing `Reflection`.
 #[derive(Default)]
 pub struct ToTypescript {
     /// Stores reflection info keyed by TypeId. Using TypeId assumes 'static types.
-    types: HashMap<TypeId, TypeInfo>,
-    /// Maps a (TS Module Path, TS Type Name) pair to the TypeId for lookup during generation.
-    name_registry: BTreeMap<(String, String), TypeId>,
+    type_map: HashMap<TypeId, TypeInfo>,
+    /// Maps a (ModulePath, TypeName) pair to the TypeId for lookup during generation.
+    type_registry: BTreeMap<TypeKey, TypeId>,
     /// Tracks types currently being processed in `add_type` to detect cycles.
-    processing_stack: HashSet<TypeId>,
+    visited_type_ids: HashSet<TypeId>,
     /// Maintains insertion order for somewhat stable output. Keyed by TypeId.
-    generation_order: Vec<TypeId>,
+    type_id_visit_order: Vec<TypeId>,
 }
 
-impl ToTypescript {
-    /// Adds a Rust type `T` (which must implement `ReflectTo` and be `'static`)
-    /// to the generator. Relies on user explicitly adding all needed dependent types.
-    pub fn add_type<T>(&mut self) -> Result<(), ToTypeScriptError>
-    where
-        T: ReflectTo + 'static,
-    {
-        let type_id = TypeId::of::<T>();
-        if self.types.contains_key(&type_id) {
-            return Ok(());
-        }
-        if self.processing_stack.contains(&type_id) {
+// Implement TypeRegistry trait for recursive dependency handling
+impl TypeRegistry for ToTypescript {
+    fn register_type(&mut self, type_id: TypeId, info: TypeInfo) -> Result<(), Box<dyn Error>> {
+        // Skip if already registered or being processed (avoid cycles)
+        if self.type_map.contains_key(&type_id) || self.visited_type_ids.contains(&type_id) {
             return Ok(());
         }
 
-        self.processing_stack.insert(type_id);
+        // Mark as processing
+        self.visited_type_ids.insert(type_id);
 
-        let info = T::reflect();
+        // Add to registry
         let ts_module_path = info.module_path.replace("::", ".");
         let ts_name = info.name.clone();
-        let name_key = (ts_module_path.clone(), ts_name.clone());
+        let name_key = (ts_module_path, ts_name);
 
-        if let Some(existing_id) = self.name_registry.get(&name_key) {
+        // Check for name collisions
+        if let Some(existing_id) = self.type_registry.get(&name_key) {
             if *existing_id != type_id {
                 eprintln!(
                     "Warning: TS Type name collision for '{}' in module '{}'. Overwriting.",
-                    ts_name, ts_module_path
+                    info.name, info.module_path
                 );
             }
         }
 
-        // Check dependencies recursively (doesn't add, just traverses)
-        self.check_dependencies_from_info(&info)?;
+        // Register the type first
+        self.type_registry.insert(name_key, type_id);
+        self.type_map.insert(type_id, info.clone());
+        self.type_id_visit_order.push(type_id);
 
-        if let std::collections::hash_map::Entry::Vacant(e) = self.types.entry(type_id) {
-            e.insert(info);
-            self.name_registry.insert(name_key, type_id);
-            self.generation_order.push(type_id);
-        } else {
-            self.name_registry.entry(name_key).or_insert(type_id);
+        // Process dependencies recursively
+        for add_dependency in &info.dependencies {
+            if let Err(e) = add_dependency(self) {
+                self.visited_type_ids.remove(&type_id);
+                return Err(e);
+            }
         }
 
-        self.processing_stack.remove(&type_id);
+        // Done processing
+        self.visited_type_ids.remove(&type_id);
+
         Ok(())
     }
+}
 
-    // Renamed dependency check functions
-    fn check_dependencies_from_info(&self, info: &TypeInfo) -> Result<(), ToTypeScriptError> {
-        match &info.data {
-            DataKind::Struct(s_info) => self.check_dependencies_from_fields(&s_info.fields)?,
-            DataKind::Enum(e_info) => {
-                for variant in &e_info.variants {
-                    self.check_dependencies_from_fields(&variant.fields)?;
-                }
-            }
-        }
-        Ok(())
-    }
+impl ToTypescript {
+    /// Adds a Rust type `T` (which must implement `Reflection` and be `'static`)
+    /// to the generator. Recursively adds all dependent types.
+    pub fn add_type<T>(&mut self) -> Result<(), ToTypeScriptError>
+    where
+        T: Reflection + 'static,
+    {
+        let type_id = TypeId::of::<T>();
+        let info = T::reflect();
 
-    fn check_dependencies_from_fields(&self, fields: &FieldsInfo) -> Result<(), ToTypeScriptError> {
-        match fields {
-            FieldsInfo::Named(fields) | FieldsInfo::Unnamed(fields) => {
-                for field in fields {
-                    if field.attributes.skip {
-                        continue;
-                    }
-                    Self::check_dependencies_from_type_ref(&field.ty)?;
-                }
-            }
-            FieldsInfo::Unit => {}
-        }
-        Ok(())
-    }
-
-    fn check_dependencies_from_type_ref(type_ref: &TypeRef) -> Result<(), ToTypeScriptError> {
-        match type_ref {
-            TypeRef::Path { generic_args, .. } => {
-                for arg in generic_args {
-                    Self::check_dependencies_from_type_ref(arg)?;
-                }
-            }
-            TypeRef::Tuple(elems) => {
-                for elem in elems {
-                    Self::check_dependencies_from_type_ref(elem)?;
-                }
-            }
-            TypeRef::Array { elem_type, .. }
-            | TypeRef::Option(elem_type)
-            | TypeRef::Box(elem_type)
-            | TypeRef::Vec(elem_type) => {
-                Self::check_dependencies_from_type_ref(elem_type)?;
-            }
-            TypeRef::Result { ok_type, err_type } => {
-                Self::check_dependencies_from_type_ref(ok_type)?;
-                Self::check_dependencies_from_type_ref(err_type)?;
-            }
-            TypeRef::Map {
-                key_type,
-                value_type,
-            } => {
-                Self::check_dependencies_from_type_ref(key_type)?;
-                Self::check_dependencies_from_type_ref(value_type)?;
-            }
-            TypeRef::Primitive(_) | TypeRef::Unit | TypeRef::Never | TypeRef::Unsupported(_) => {}
-        }
-        Ok(())
+        // Use the TypeRegistry trait implementation to handle this type
+        self.register_type(type_id, info)
+            .map_err(|e| ToTypeScriptError::Dependency(e.to_string()))
     }
 
     /// Generates the final TypeScript code string.
@@ -158,8 +116,8 @@ impl ToTypescript {
         output.push_str("/* eslint-disable @typescript-eslint/no-namespace */\n\n");
 
         let mut modules: BTreeMap<String, Vec<TypeId>> = BTreeMap::new();
-        for type_id in &self.generation_order {
-            if let Some(info) = self.types.get(type_id) {
+        for type_id in &self.type_id_visit_order {
+            if let Some(info) = self.type_map.get(type_id) {
                 let ts_module_path = info.module_path.replace("::", ".");
                 modules.entry(ts_module_path).or_default().push(*type_id);
             } else {
@@ -178,7 +136,7 @@ impl ToTypescript {
 
             for type_id in type_ids_in_module {
                 let info = self
-                    .types
+                    .type_map
                     .get(&type_id)
                     .ok_or(ToTypeScriptError::TypeNotFound(type_id))?;
                 match self.generate_ts_for_type(info) {
@@ -301,25 +259,21 @@ impl ToTypescript {
                         }
                         field_defs.push_str("   */\n");
                     }
-                    field_defs.push_str(&format!("  {}: {};\n", ts_field_name, field_type_ts));
+                    field_defs.push_str(&format!("  {}: {}\n", ts_field_name, field_type_ts));
                 }
                 Ok(format!("export interface {} {{\n{}}}", ts_name, field_defs))
             }
             FieldsInfo::Unnamed(fields) => {
                 if fields.len() == 1 {
                     let inner_type_ts = self.get_ts_type_str(&fields[0].ty)?;
-                    Ok(format!("export type {} = {};", ts_name, inner_type_ts))
+                    Ok(format!("export type {} = {}", ts_name, inner_type_ts))
                 } else {
                     let types: Result<Vec<String>, _> =
                         fields.iter().map(|f| self.get_ts_type_str(&f.ty)).collect();
-                    Ok(format!(
-                        "export type {} = [{}];",
-                        ts_name,
-                        types?.join(", ")
-                    ))
+                    Ok(format!("export type {} = [{}]", ts_name, types?.join(", ")))
                 }
             }
-            FieldsInfo::Unit => Ok(format!("export type {} = null;", ts_name)),
+            FieldsInfo::Unit => Ok(format!("export type {} = null", ts_name)),
         }
     }
 
@@ -356,7 +310,7 @@ impl ToTypescript {
                 .collect();
             let variant_strings: Vec<String> = results?.into_iter().flatten().collect();
             Ok(format!(
-                "export type {} = {};",
+                "export type {} = {}",
                 ts_name,
                 if variant_strings.is_empty() {
                     "never".to_string()
@@ -388,7 +342,7 @@ impl ToTypescript {
                 variant_defs.join("\n  | ")
             };
 
-            Ok(format!("export type {} =\n  {};", ts_name, final_type_body))
+            Ok(format!("export type {} =\n  {}", ts_name, final_type_body))
         }
     }
 
@@ -500,8 +454,22 @@ impl ToTypescript {
             TypeRef::Path {
                 path,
                 is_reflect_to,
+                type_id,
                 ..
             } => {
+                // If we have the TypeId from the macro, use it directly
+                if let Some(tid) = type_id {
+                    if let Some(info) = self.type_map.get(tid) {
+                        let ts_module = info.module_path.replace("::", ".");
+                        if ts_module.is_empty() {
+                            return Ok(info.name.clone());
+                        } else {
+                            return Ok(format!("{}.{}", ts_module, info.name));
+                        }
+                    }
+                }
+
+                // Otherwise, fall back to path resolution
                 if *is_reflect_to {
                     self.resolve_type_path(path)
                 } else {
@@ -562,12 +530,12 @@ impl ToTypescript {
         let ts_mod_part = rust_mod_part.replace("::", ".");
 
         let exact_key = (ts_mod_part.clone(), type_name_part.to_string());
-        if let Some(type_id) = self.name_registry.get(&exact_key) {
+        if let Some(type_id) = self.type_registry.get(&exact_key) {
             return self.get_fully_qualified_ts_name(*type_id);
         }
 
         let mut matches = Vec::new();
-        for ((_reg_mod, reg_name), type_id) in &self.name_registry {
+        for ((_reg_mod, reg_name), type_id) in &self.type_registry {
             if reg_name == type_name_part {
                 matches.push(*type_id);
             }
@@ -596,7 +564,7 @@ impl ToTypescript {
     /// Gets the fully qualified TypeScript name for a registered TypeId.
     fn get_fully_qualified_ts_name(&self, type_id: TypeId) -> Result<String, ToTypeScriptError> {
         let info = self
-            .types
+            .type_map
             .get(&type_id)
             .ok_or(ToTypeScriptError::TypeNotFound(type_id))?;
         let ts_module = info.module_path.replace("::", ".");

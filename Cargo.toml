@@ -1,13 +1,11 @@
+### `reflect_to` crate ###
 [package]
 name = "reflect_to"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["nobane"]
 description = "Run-time type reflection primitives"
 license = "MIT"
-
-[lib]
-path = "src/lib.rs"
 
 [features]
 default = ["typescript", "python"]
@@ -15,15 +13,23 @@ typescript = ["to_typescript"]
 python = ["to_python"]
 
 [dependencies]
-__internals = { path = "crates/internals" }
-__macro = { path = "crates/macro" }
+__internals = { workspace = true }
+__macro = { workspace = true }
 
-to_python = { path = "crates/to_python", optional = true}
-to_typescript = { path = "crates/to_typescript", optional = true}
+to_python = { workspace = true, optional = true }
+to_typescript = { workspace = true, optional = true }
 
+[dev-dependencies]
 serde = { workspace = true }
 
+### cargo workspace ###
 [workspace.dependencies]
+__internals = { path = "crates/internals", version = "0.1.2" }
+__macro = { path = "crates/macro" , version = "0.1.2"}
+
+to_python = { path = "crates/to_python", version = "0.1.2" }
+to_typescript = { path = "crates/to_typescript", version = "0.1.2" }
+
 once_cell = "1.19"
 proc-macro2 = "1.0"
 quote = "1.0"

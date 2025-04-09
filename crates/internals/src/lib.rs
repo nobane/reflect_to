@@ -1,19 +1,31 @@
 use std::collections::BTreeMap;
+use std::{any::TypeId, error::Error};
 
-// --- Core Trait ---
+/// Trait for registry implementations that can store types
+pub trait TypeRegistry {
+    /// Register a type in the registry with its type information
+    fn register_type(&mut self, type_id: TypeId, info: TypeInfo) -> Result<(), Box<dyn Error>>;
+}
+
+/// Function type for adding a dependency to a registry
+type DependencyAdder = fn(&mut dyn TypeRegistry) -> Result<(), Box<dyn Error>>;
 
 /// Trait for types that can provide reflection metadata about themselves.
 ///
-/// This trait is intended to be derived using `#[derive(ReflectTo)]` from the `reflect_to` crate.
+/// This trait is intended to be derived using `#[derive(Reflection)]` from the `reflect_to` crate.
 /// Manually implementing this trait is complex and generally discouraged.
-pub trait ReflectTo {
+pub trait Reflection {
     /// Returns the reflection metadata for this type.
     fn reflect() -> TypeInfo;
-}
 
-// --- Metadata Structures ---
-// (These are copied verbatim from the previous `reflect_to/src/lib.rs`,
-//  as they don't depend on the macro itself)
+    /// Returns the TypeId for this type.
+    fn type_id() -> TypeId
+    where
+        Self: 'static,
+    {
+        TypeId::of::<Self>()
+    }
+}
 
 /// Top-level information about a reflected type.
 #[derive(Debug, Clone, PartialEq)]
@@ -29,6 +41,8 @@ pub struct TypeInfo {
     pub attributes: TypeAttributes,
     /// Documentation comments associated with the type.
     pub docs: Vec<String>,
+    /// List of functions that can add dependencies of this type to a registry
+    pub dependencies: Vec<DependencyAdder>,
 }
 
 /// Represents the different kinds of data structures we can reflect.
@@ -101,21 +115,19 @@ pub enum TypeRef {
     /// A path to another Rust type (struct, enum, or external type).
     Path {
         /// The fully qualified path string (e.g., "std::string::String", "crate::models::User", "Vec").
-        /// Generators use this to identify the type.
         path: String,
-        /// Generic arguments, if any (e.g., for `Vec<String>`, this would contain `TypeRef::Primitive(PrimitiveType::String)`).
+        /// Generic arguments, if any
         generic_args: Vec<TypeRef>,
-        /// Indicates if this path corresponds to a type that implements `ReflectTo`.
-        /// Generators use this to know if they can recursively call `reflect()` for this type.
-        is_reflect_to: bool, // The macro will determine this heuristically or via trait bounds later
+        /// Indicates if this path corresponds to a type that implements `Reflection`.
+        is_reflect_to: bool,
+        /// Type ID for reflected types if known at compile time
+        #[doc(hidden)]
+        type_id: Option<TypeId>,
     },
     /// A tuple type like `(String, i32)`.
     Tuple(Vec<TypeRef>),
     /// A fixed-size array type like `[u8; 32]`. Target languages often treat this like a Vec/List.
-    Array {
-        elem_type: Box<TypeRef>,
-        len: usize, // We might not always capture this from syn easily, maybe just store elem_type
-    },
+    Array { elem_type: Box<TypeRef>, len: usize },
     /// Represents `Option<T>`.
     Option(Box<TypeRef>),
     /// Represents `Result<T, E>`. Generators might only care about T.
@@ -214,7 +226,6 @@ pub enum RenameRuleValue {
 /// Converts a string to PascalCase.
 /// "foo_bar" -> "FooBar", "foo-bar" -> "FooBar"
 pub fn to_pascal_case(s: &str) -> String {
-    // (This function remains the same as before)
     let mut result = String::with_capacity(s.len());
     let mut capitalize_next = true;
     for c in s.chars() {
@@ -273,21 +284,18 @@ pub fn to_snake_case(s: &str) -> String {
 /// Converts a string to SCREAMING_SNAKE_CASE.
 /// "fooBar" -> "FOO_BAR"
 pub fn to_screaming_snake_case(s: &str) -> String {
-    // (This function remains the same as before)
     to_snake_case(s).to_ascii_uppercase()
 }
 
 /// Converts a string to kebab-case.
 /// "fooBar" -> "foo-bar"
 pub fn to_kebab_case(s: &str) -> String {
-    // (This function remains the same as before)
     to_snake_case(s).replace('_', "-")
 }
 
 /// Converts a string to camelCase.
 /// "foo_bar" -> "fooBar", "FooBar" -> "fooBar"
 pub fn to_camel_case(s: &str) -> String {
-    // (This function remains the same as before)
     let pascal = to_pascal_case(s);
     if let Some(first) = pascal.chars().next() {
         format!("{}{}", first.to_lowercase(), &pascal[first.len_utf8()..])
@@ -298,7 +306,6 @@ pub fn to_camel_case(s: &str) -> String {
 
 /// Applies a rename rule to an original string based on the `RenameRuleValue`.
 pub fn apply_rename_rule(original: &str, rule: &Option<RenameRuleValue>) -> Option<String> {
-    // (This function remains the same as before)
     match rule {
         Some(RenameRuleValue::Rule(rule_str)) => match rule_str.as_str() {
             "lowercase" => Some(original.to_lowercase()),

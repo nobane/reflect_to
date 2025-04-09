@@ -20,13 +20,13 @@ pub fn derive_reflect_to(input: TokenStream) -> TokenStream {
         Data::Struct(data_struct) => generate_struct_info(data_struct, &rename_all_rule_opt),
         Data::Enum(data_enum) => generate_enum_info(data_enum, &input.attrs, &rename_all_rule_opt),
         Data::Union(_) => {
-            return syn::Error::new_spanned(input, "ReflectTo cannot be derived for unions")
+            return syn::Error::new_spanned(input, "Reflection cannot be derived for unions")
                 .to_compile_error()
                 .into();
         }
     };
 
-    // Module path calculation (more robust version)
+    // Module path calculation
     let module_path_robust_quote = quote! {
         {
             let path = module_path!();
@@ -47,18 +47,22 @@ pub fn derive_reflect_to(input: TokenStream) -> TokenStream {
         }
     };
 
+    // Generate dependency adders list
+    let dependencies_quote = generate_dependency_adders(&input);
+
     let expanded = quote! {
         // Ensure the core crate is accessible via a known alias
         #[allow(unused_imports)]
 
-        impl ::reflect_to::ReflectTo for #name {
+        impl ::reflect_to::Reflection for #name {
             fn reflect() -> ::reflect_to::TypeInfo {
                 ::reflect_to::TypeInfo {
                     name: stringify!(#name).to_string(),
                     module_path: { #module_path_robust_quote },
                     data: #data_kind_quote,
-                    attributes: #type_attrs_quote, // Use the generated quote block
+                    attributes: #type_attrs_quote,
                     docs: vec![#(#docs.to_string()),*],
+                    dependencies: #dependencies_quote,
                 }
             }
         }
@@ -67,7 +71,156 @@ pub fn derive_reflect_to(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-// --- Struct Info Generation ---
+// Generate dependency adders for direct dependencies
+fn generate_dependency_adders(input: &DeriveInput) -> proc_macro2::TokenStream {
+    let mut dependencies = Vec::new();
+
+    match &input.data {
+        Data::Struct(data_struct) => {
+            collect_field_dependencies(&data_struct.fields, &mut dependencies);
+        }
+        Data::Enum(data_enum) => {
+            for variant in &data_enum.variants {
+                collect_field_dependencies(&variant.fields, &mut dependencies);
+            }
+        }
+        Data::Union(_) => {
+            // Unions already handled earlier
+        }
+    }
+
+    // Make dependencies unique by deduplicating based on the string representation
+    dependencies.dedup_by(|a, b| {
+        a.path.to_token_stream().to_string() == b.path.to_token_stream().to_string()
+    });
+
+    // Generate the vector of adder functions
+    if dependencies.is_empty() {
+        quote! { Vec::new() }
+    } else {
+        let adders = dependencies.iter().map(|dep_type| {
+            let type_path_tokens = &dep_type.path;
+            quote! {
+                |registry: &mut dyn ::reflect_to::TypeRegistry| -> Result<(), Box<dyn std::error::Error>> {
+                    let type_id = <#type_path_tokens as ::reflect_to::Reflection>::type_id();
+                    let info = <#type_path_tokens as ::reflect_to::Reflection>::reflect();
+                    registry.register_type(type_id, info)?;
+                    Ok(())
+                }
+            }
+        });
+
+        quote! {
+            vec![
+                #(#adders),*
+            ]
+        }
+    }
+}
+// Collect dependencies from fields
+fn collect_field_dependencies(fields: &Fields, dependencies: &mut Vec<syn::TypePath>) {
+    match fields {
+        Fields::Named(named_fields) => {
+            for field in &named_fields.named {
+                extract_dependencies_from_type(&field.ty, dependencies);
+            }
+        }
+        Fields::Unnamed(unnamed_fields) => {
+            for field in &unnamed_fields.unnamed {
+                extract_dependencies_from_type(&field.ty, dependencies);
+            }
+        }
+        Fields::Unit => {}
+    }
+}
+
+// Recursively extract type paths from a type
+fn extract_dependencies_from_type(ty: &Type, dependencies: &mut Vec<syn::TypePath>) {
+    match ty {
+        Type::Path(type_path) => {
+            // Skip if the path has a qself
+            if type_path.qself.is_some() {
+                return;
+            }
+
+            // Get the last segment to check if it's a custom type
+            if let Some(last_segment) = type_path.path.segments.last() {
+                let ident_str = last_segment.ident.to_string();
+
+                // Only add paths that seem to be Reflection types
+                if !is_primitive_or_std_type(&ident_str) {
+                    dependencies.push(type_path.clone());
+                }
+
+                // Process generic arguments recursively
+                if let PathArguments::AngleBracketed(args) = &last_segment.arguments {
+                    for arg in &args.args {
+                        if let GenericArgument::Type(nested_type) = arg {
+                            extract_dependencies_from_type(nested_type, dependencies);
+                        }
+                    }
+                }
+            }
+        }
+        Type::Reference(type_ref) => {
+            extract_dependencies_from_type(&type_ref.elem, dependencies);
+        }
+        Type::Array(array) => {
+            extract_dependencies_from_type(&array.elem, dependencies);
+        }
+        Type::Tuple(tuple) => {
+            for elem in &tuple.elems {
+                extract_dependencies_from_type(elem, dependencies);
+            }
+        }
+        Type::Group(group) => {
+            extract_dependencies_from_type(&group.elem, dependencies);
+        }
+        Type::Paren(paren) => {
+            extract_dependencies_from_type(&paren.elem, dependencies);
+        }
+        Type::Slice(slice) => {
+            extract_dependencies_from_type(&slice.elem, dependencies);
+        }
+        // For other types, we don't extract dependencies
+        _ => {}
+    }
+}
+
+// Check if a type name is likely a primitive or standard library type
+fn is_primitive_or_std_type(type_name: &str) -> bool {
+    matches!(
+        type_name,
+        "String"
+            | "str"
+            | "bool"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+            | "char"
+            | "Vec"
+            | "HashMap"
+            | "BTreeMap"
+            | "Option"
+            | "Result"
+            | "Box"
+            | "PathBuf"
+    )
+}
+
+// --- Struct Info Generation --- (Rest of the implementation remains the same)
+
 fn generate_struct_info(
     data_struct: &DataStruct,
     rename_all_rule: &Option<RenameRuleValue>,
@@ -266,41 +419,25 @@ fn generate_type_ref(ty: &Type) -> proc_macro2::TokenStream {
                         vec![]
                     };
 
-                // Basic heuristic for is_reflect_to (can be improved)
-                let is_reflect_to = !matches!(
-                    ident_str.as_str(),
-                    "String"
-                        | "str"
-                        | "bool"
-                        | "i8"
-                        | "i16"
-                        | "i32"
-                        | "i64"
-                        | "i128"
-                        | "isize"
-                        | "u8"
-                        | "u16"
-                        | "u32"
-                        | "u64"
-                        | "u128"
-                        | "usize"
-                        | "f32"
-                        | "f64"
-                        | "PathBuf"
-                        | "char"
-                        | "Option"
-                        | "Vec"
-                        | "Box"
-                        | "Result"
-                        | "HashMap"
-                        | "BTreeMap"
-                );
+                // Basic heuristic for is_reflect_to
+                let is_reflect_to = !is_primitive_or_std_type(&ident_str);
+
+                // Generate type_id if possible
+                let type_id_quote = if is_reflect_to {
+                    let type_path_tokens = &type_path.path;
+                    quote! {
+                        Some(::std::any::TypeId::of::<#type_path_tokens>())
+                    }
+                } else {
+                    quote! { None }
+                };
 
                 return quote! {
                     ::reflect_to::TypeRef::Path {
                         path: #full_path_str.to_string(),
                         generic_args: vec![#(#generic_args_quote),*],
                         is_reflect_to: #is_reflect_to,
+                        type_id: #type_id_quote,
                     }
                 };
             }
@@ -333,7 +470,7 @@ fn generate_type_ref(ty: &Type) -> proc_macro2::TokenStream {
         _ => generate_unsupported_type_ref(ty),
     }
 }
-
+// Helper to map simple identifiers to *code* constructing
 // Helper to map simple identifiers to *code* constructing PrimitiveType variants
 fn map_primitive(ident_str: &str) -> Option<proc_macro2::TokenStream> {
     let primitive_enum_variant = match ident_str {

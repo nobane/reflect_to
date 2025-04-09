@@ -13,70 +13,72 @@
 By using the `Reflect` derive:
 
 ```rs
-use reflect_to::{Reflect, ToTypescript};
+use reflect_to::Reflect;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
-#[derive(Reflect, Serialize, Deserialize, Debug)]
-struct SimpleStruct {
-    field_a: i32,
-    field_b: String,
-}
-
-#[derive(Reflect, Serialize, Deserialize, Debug)]
-enum SimpleEnum {
-    One,
-    Two(String),
-    Three { id: u64, name: String },
-}
-
-#[derive(Reflect, Serialize, Deserialize, Debug)]
+#[derive(Reflect, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
-struct ComplexStruct {
-    simple: SimpleStruct,
-    #[serde(rename = "status_list")]
-    statuses: Vec<SimpleEnum>,
-    optional_path: Option<PathBuf>, // PathBuf -> string
-    #[serde(skip_serializing_if = "Option::is_none")]
-    maybe_number: Option<f64>,
+pub struct User {
+    email: String,
+    is_active: bool,
+    uploaded_files: Vec<UserPost>,
+    profile_image: Option<String>,
+    settings: UserSettings,
+    status: UserStatus,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut generator = ToTypescript::default();
+#[derive(Reflect, Serialize, Deserialize, Debug, Clone)]
+pub enum UserStatus {
+    Offline,
+    Online { status: String },
+    Unknown(String),
+}
 
-    generator.add_type::<ComplexStruct>()?;
+#[derive(Reflect, Serialize, Deserialize, Debug, Clone)]
+pub struct UserPost {
+    post_name: Option<String>,
+    contents: Vec<String>,
+}
 
-    let ts_code = generator.generate()?;
-
-    println!("{ts_code}");
-
-    Ok(())
+#[derive(Reflect, Serialize, Deserialize, Debug, Clone)]
+#[serde(rename = "camelCase")]
+pub struct UserSettings {
+    theme_path: PathBuf,
+    email_notifications: bool,
+    #[serde(rename = "custom")]
+    custom_settings: HashMap<String, String>,
 }
 ```
 
 the following type information can be generated at runtime (for instance as part of a wasm build process):
 
 ```ts
-export interface SimpleStruct {
-    field_a: number;
-    field_b: string;
+export interface User {
+    email: string;
+    isActive: boolean;
+    uploadedFiles: UserPost[];
+    profileImage: string | null;
+    settings: UserSettings;
+    status: UserStatus;
 }
 
+export type UserStatus =
+    "Offline"
+    | { "Online": {
+        status: string;
+    } }
+    | { "Unknown": string }
 
-export type SimpleEnum =
-    "One"
-    | { "Two": string }
-    | { "Three": {
-        id: number;
-        name: string;
-    } };
+export interface UserPost {
+    post_name: string | null;
+    contents: string[];
+}
 
-
-export interface ComplexStruct {
-    simple: SimpleStruct;
-    status_list: SimpleEnum[];
-    optionalPath: string | null;
-    maybeNumber: number | null;
+export interface UserSettings {
+    theme_path: string;
+    email_notifications: boolean;
+    custom: Record<string, string>;
 }
 ```
 
@@ -85,12 +87,12 @@ export interface ComplexStruct {
 Run one of the examples via
 
 ```
-    cargo run --example to_python
+cargo run --example to_python
 ```
 or
 
 ```
-    cargo run --example to_typescript
+cargo run --example to_typescript
 ```
 
 # Documentation

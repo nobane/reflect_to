@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "__internals"
-version = "0.1.0"
+version = "0.1.2"
 
 [[package]]
 name = "__macro"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "__internals",
  "proc-macro2",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "reflect_to"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "__internals",
  "__macro",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "to_python"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "__internals",
  "once_cell",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "to_typescript"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "__internals",
  "once_cell",

@@ -1,6 +1,6 @@
 [package]
 name = "__macro"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 authors = ["nobane"]
 description = "Derive macro for the reflect_to framework"
@@ -11,7 +11,7 @@ publish = false
 proc-macro = true
 
 [dependencies]
-__internals = { path = "../internals" }
+__internals = { path = "../internals", version = "0.1.2" }
 
 syn = { workspace = true }
 quote = { workspace = true }
