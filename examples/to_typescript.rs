@@ -1,6 +1,6 @@
+use reflect_to::{Reflect, ToTypescript};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use to_typescript::{Reflect, TypeScriptGenerator};
 
 #[derive(Reflect, Serialize, Deserialize, Debug)]
 struct SimpleStruct {
@@ -27,7 +27,7 @@ struct ComplexStruct {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut generator = TypeScriptGenerator::default();
+    let mut generator = ToTypescript::default();
 
     generator.add_type::<ComplexStruct>()?;
 

@@ -5,7 +5,7 @@ use syn::{
     GenericArgument, LitStr, Meta, PathArguments, Type, Variant,
 };
 
-use reflect_to_core::RenameRuleValue;
+use __internals::RenameRuleValue;
 
 #[proc_macro_derive(Reflect, attributes(serde))]
 pub fn derive_reflect_to(input: TokenStream) -> TokenStream {

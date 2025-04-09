@@ -1,6 +1,6 @@
+use reflect_to::{Reflect, ToPython};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use to_python::{PythonGenerator, Reflect};
 
 #[derive(Reflect, Serialize, Deserialize, Debug)]
 struct SimpleStruct {
@@ -28,7 +28,7 @@ struct ComplexStruct {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut generator = PythonGenerator::default();
+    let mut generator = ToPython::default();
 
     generator.add_type::<ComplexStruct>()?; // Dependencies should be handled if already added
 

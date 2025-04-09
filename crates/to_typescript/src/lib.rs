@@ -1,4 +1,4 @@
-use reflect_to::{
+use __internals::{
     apply_rename_rule, DataKind, EnumInfo, EnumRepresentation, FieldInfo, FieldsInfo,
     PrimitiveType, ReflectTo, RenameRuleValue, StructInfo, TypeAttributes, TypeInfo, TypeRef,
     VariantInfo,
@@ -14,7 +14,6 @@ use std::{
 use thiserror::Error;
 
 // --- `reflect_to` Re-exports --
-pub use reflect_to::Reflect;
 
 // --- Error Handling ---
 #[derive(Error, Debug)]
@@ -33,7 +32,7 @@ pub enum ToTypeScriptError {
 
 /// Generates TypeScript definitions from Rust types implementing `ReflectTo`.
 #[derive(Default)]
-pub struct TypeScriptGenerator {
+pub struct ToTypescript {
     /// Stores reflection info keyed by TypeId. Using TypeId assumes 'static types.
     types: HashMap<TypeId, TypeInfo>,
     /// Maps a (TS Module Path, TS Type Name) pair to the TypeId for lookup during generation.
@@ -44,7 +43,7 @@ pub struct TypeScriptGenerator {
     generation_order: Vec<TypeId>,
 }
 
-impl TypeScriptGenerator {
+impl ToTypescript {
     /// Adds a Rust type `T` (which must implement `ReflectTo` and be `'static`)
     /// to the generator. Relies on user explicitly adding all needed dependent types.
     pub fn add_type<T>(&mut self) -> Result<(), ToTypeScriptError>

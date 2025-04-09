@@ -13,24 +13,24 @@
 By using the `Reflect` derive:
 
 ```rs
-use serde::{Serialize, Deserialize};
+use reflect_to::{Reflect, ToTypescript};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use to_typescript::{Reflect, TypeScriptGenerator};
 
-#[derive(Reflect, Serialize, Deserialize)]
+#[derive(Reflect, Serialize, Deserialize, Debug)]
 struct SimpleStruct {
     field_a: i32,
     field_b: String,
 }
 
-#[derive(Reflect, Serialize, Deserialize)]
+#[derive(Reflect, Serialize, Deserialize, Debug)]
 enum SimpleEnum {
     One,
     Two(String),
     Three { id: u64, name: String },
 }
 
-#[derive(Reflect, Serialize, Deserialize)]
+#[derive(Reflect, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ComplexStruct {
     simple: SimpleStruct,
@@ -42,7 +42,7 @@ struct ComplexStruct {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut generator = TypeScriptGenerator::default();
+    let mut generator = ToTypescript::default();
 
     generator.add_type::<ComplexStruct>()?;
 
@@ -85,12 +85,12 @@ export interface ComplexStruct {
 Run one of the examples via
 
 ```
-    cargo example to_python
+    cargo run --example to_python
 ```
 or
 
 ```
-    cargo example to_typescript
+    cargo run --example to_typescript
 ```
 
 # Documentation

@@ -1,4 +1,4 @@
-use reflect_to::{
+use __internals::{
     apply_rename_rule, to_pascal_case, to_screaming_snake_case, to_snake_case, DataKind, EnumInfo,
     EnumRepresentation, FieldInfo, FieldsInfo, PrimitiveType, ReflectTo, RenameRuleValue,
     StructInfo, TypeAttributes, TypeInfo, TypeRef, VariantInfo,
@@ -13,7 +13,7 @@ use std::{
 use thiserror::Error;
 
 // --- `reflect_to` Re-exports --
-pub use reflect_to::Reflect;
+// pub use __internals::Reflect;
 
 // --- Error Handling ---
 #[derive(Error, Debug)]
@@ -36,7 +36,7 @@ pub enum ToPythonError {
 
 /// Generates Python type stub (`.pyi`) files from Rust types implementing `ReflectTo`.
 #[derive(Default)]
-pub struct PythonGenerator {
+pub struct ToPython {
     /// Stores reflection info keyed by TypeId.
     types: HashMap<TypeId, TypeInfo>,
     /// Maps a (Python Module Path, Python Type Name) pair to the TypeId.
@@ -48,7 +48,7 @@ pub struct PythonGenerator {
     // Imports are now generated transiently in the `generate` method
 }
 
-impl PythonGenerator {
+impl ToPython {
     /// Adds a Rust type `T` to the generator.
     pub fn add_type<T>(&mut self) -> Result<(), ToPythonError>
     where
