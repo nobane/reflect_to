@@ -7,7 +7,6 @@ description = "Derive macro for the reflect_to framework"
 license = "MIT"
 
 [lib]
-path = "reflect_macro.rs"
 proc-macro = true
 
 [dependencies]
