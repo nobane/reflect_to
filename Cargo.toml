@@ -1,0 +1,15 @@
+[workspace.dependencies]
+syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+once_cell = "1.19"
+regex = "1.10"
+thiserror = "1.0"
+
+serde = { version = "1.0.219", features = ["derive"] }
+reflect_to = { path = "reflect_to" }
+reflect_to_macro = { path = "reflect_to_macro" }
+
+
+[workspace]
+members = [ "crates/*", ]

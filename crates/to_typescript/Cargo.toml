@@ -1,0 +1,13 @@
+[package]
+name = "to_typescript"
+version = "0.1.0"
+edition = "2021"
+authors = ["nobane"]
+license = "MIT"
+
+[dependencies]
+reflect_to = { path = "../reflect_to" }
+once_cell = { workspace = true }
+regex = { workspace = true }
+thiserror = { workspace = true }
+serde ={ workspace = true }

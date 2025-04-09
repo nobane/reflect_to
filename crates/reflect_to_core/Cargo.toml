@@ -1,0 +1,8 @@
+[package]
+name = "reflect_to_core"
+version = "0.1.0"
+edition = "2024"
+authors = ["nobane"]
+license = "MIT"
+
+[dependencies]
