@@ -5,12 +5,6 @@ use syn::{
     GenericArgument, LitStr, Meta, PathArguments, Type, Variant,
 };
 
-/// Represents the different Serde rename_all strategies (as strings).
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RenameRuleValue {
-    Rule(String), // "lowercase", "UPPERCASE", "PascalCase", ...
-}
-
 #[proc_macro_derive(Reflect, attributes(serde))]
 pub fn derive_reflect_to(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -31,17 +25,20 @@ pub fn derive_reflect_to(input: TokenStream) -> TokenStream {
     };
 
     // Module path calculation
-    let module_path_robust_quote = quote! {
+    let module_path = quote! {
         {
             let path = module_path!();
             let type_name_str = stringify!(#name);
+
             let parts: Vec<&str> = path.split("::").collect();
+
             // Remove crate name (first part)
             let parts_no_crate = if parts.len() > 1 { &parts[1..] } else { &parts[..] };
+
             // If the last part is the type name, remove it
             if parts_no_crate.last() == Some(&type_name_str) {
                 if parts_no_crate.len() > 1 {
-                     parts_no_crate[..parts_no_crate.len()-1].join("::")
+                    parts_no_crate[..parts_no_crate.len()-1].join("::")
                 } else {
                     String::new() // Only TypeName left after crate, so root module ""
                 }
@@ -51,7 +48,6 @@ pub fn derive_reflect_to(input: TokenStream) -> TokenStream {
         }
     };
 
-    // Generate dependency adders list
     let dependencies_quote = generate_dependency_adders(&input);
 
     let expanded = quote! {
@@ -62,7 +58,7 @@ pub fn derive_reflect_to(input: TokenStream) -> TokenStream {
             fn reflect() -> ::reflect_to::TypeInfo {
                 ::reflect_to::TypeInfo {
                     name: stringify!(#name).to_string(),
-                    module_path: { #module_path_robust_quote },
+                    module_path: { #module_path },
                     data: #data_kind_quote,
                     attributes: #type_attrs_quote,
                     docs: vec![#(#docs.to_string()),*],
@@ -75,7 +71,6 @@ pub fn derive_reflect_to(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-// Generate dependency adders for direct dependencies
 fn generate_dependency_adders(input: &DeriveInput) -> proc_macro2::TokenStream {
     let mut dependencies = Vec::new();
 
@@ -88,9 +83,7 @@ fn generate_dependency_adders(input: &DeriveInput) -> proc_macro2::TokenStream {
                 collect_field_dependencies(&variant.fields, &mut dependencies);
             }
         }
-        Data::Union(_) => {
-            // Unions already handled earlier
-        }
+        Data::Union(_) => unreachable!("Unions already handled earlier"),
     }
 
     // Make dependencies unique by deduplicating based on the string representation
@@ -121,7 +114,7 @@ fn generate_dependency_adders(input: &DeriveInput) -> proc_macro2::TokenStream {
         }
     }
 }
-// Collect dependencies from fields
+
 fn collect_field_dependencies(fields: &Fields, dependencies: &mut Vec<syn::TypePath>) {
     match fields {
         Fields::Named(named_fields) => {
@@ -223,11 +216,9 @@ fn is_primitive_or_std_type(type_name: &str) -> bool {
     )
 }
 
-// --- Struct Info Generation --- (Rest of the implementation remains the same)
-
 fn generate_struct_info(
     data_struct: &DataStruct,
-    rename_all_rule: &Option<RenameRuleValue>,
+    rename_all_rule: &Option<String>,
 ) -> proc_macro2::TokenStream {
     let fields_info_quote = generate_fields_info(&data_struct.fields, rename_all_rule);
     quote! {
@@ -237,11 +228,10 @@ fn generate_struct_info(
     }
 }
 
-// --- Enum Info Generation ---
 fn generate_enum_info(
     data_enum: &DataEnum,
     attrs: &[Attribute],
-    rename_all_rule: &Option<RenameRuleValue>,
+    rename_all_rule: &Option<String>,
 ) -> proc_macro2::TokenStream {
     let representation = parse_enum_representation(attrs); // Returns quote! block
     let variants_quote = data_enum
@@ -258,10 +248,9 @@ fn generate_enum_info(
     }
 }
 
-// --- Variant Info Generation ---
 fn generate_variant_info(
     variant: &Variant,
-    enum_rename_all_rule: &Option<RenameRuleValue>,
+    enum_rename_all_rule: &Option<String>,
 ) -> proc_macro2::TokenStream {
     let name = variant.ident.to_string();
     let docs = extract_docs(&variant.attrs);
@@ -278,10 +267,9 @@ fn generate_variant_info(
     }
 }
 
-// --- Fields Info Generation ---
 fn generate_fields_info(
     fields: &Fields,
-    rename_all_rule: &Option<RenameRuleValue>,
+    rename_all_rule: &Option<String>,
 ) -> proc_macro2::TokenStream {
     match fields {
         Fields::Named(f) => {
@@ -308,10 +296,9 @@ fn generate_fields_info(
     }
 }
 
-// --- Field Info Generation ---
 fn generate_field_info(
     field: &Field,
-    _parent_rename_all_rule: &Option<RenameRuleValue>, // Rule not needed here, applied by generator
+    _parent_rename_all_rule: &Option<String>, // Rule not needed here, applied by generator
     index: usize,
 ) -> proc_macro2::TokenStream {
     let name_quote = match &field.ident {
@@ -337,7 +324,6 @@ fn generate_field_info(
     }
 }
 
-// --- TypeRef Generation ---
 fn generate_type_ref(ty: &Type) -> proc_macro2::TokenStream {
     match ty {
         Type::Path(type_path) => {
@@ -474,10 +460,9 @@ fn generate_type_ref(ty: &Type) -> proc_macro2::TokenStream {
         _ => generate_unsupported_type_ref(ty),
     }
 }
-// Helper to map simple identifiers to *code* constructing
-// Helper to map simple identifiers to *code* constructing PrimitiveType variants
+
 fn map_primitive(ident_str: &str) -> Option<proc_macro2::TokenStream> {
-    let primitive_enum_variant = match ident_str {
+    let primitive_variant = match ident_str {
         "String" => quote! { String },
         "str" => quote! { Str },
         "bool" => quote! { Bool },
@@ -500,7 +485,7 @@ fn map_primitive(ident_str: &str) -> Option<proc_macro2::TokenStream> {
         _ => return None,
     };
     Some(
-        quote! { ::reflect_to::TypeRef::Primitive(::reflect_to::PrimitiveType::#primitive_enum_variant) },
+        quote! { ::reflect_to::TypeRef::Primitive(::reflect_to::PrimitiveType::#primitive_variant) },
     )
 }
 
@@ -508,8 +493,6 @@ fn generate_unsupported_type_ref(ty: &Type) -> proc_macro2::TokenStream {
     let type_string = ty.to_token_stream().to_string();
     quote! { ::reflect_to::TypeRef::Unsupported(#type_string.to_string()) }
 }
-
-// --- Attribute Parsing Helpers ---
 
 fn extract_docs(attrs: &[Attribute]) -> Vec<String> {
     attrs
@@ -531,12 +514,10 @@ fn extract_docs(attrs: &[Attribute]) -> Vec<String> {
         .collect()
 }
 
-// Parses type attributes and returns (quote! block for TypeAttributes, Option<RenameRuleValue>)
-fn parse_type_attributes(
-    attrs: &[Attribute],
-) -> (proc_macro2::TokenStream, Option<RenameRuleValue>) {
+// Parses type attributes and returns (quote! block for TypeAttributes, Option<String>)
+fn parse_type_attributes(attrs: &[Attribute]) -> (proc_macro2::TokenStream, Option<String>) {
     let mut rename_opt: Option<String> = None;
-    let mut rename_all_opt: Option<RenameRuleValue> = None;
+    let mut rename_all_opt: Option<String> = None;
     let mut other_attrs_map: std::collections::BTreeMap<String, String> = Default::default();
 
     for attr in attrs {
@@ -548,8 +529,7 @@ fn parse_type_attributes(
             if meta.path.is_ident("rename") {
                 rename_opt = Some(meta.value()?.parse::<LitStr>()?.value());
             } else if meta.path.is_ident("rename_all") {
-                let rule_str = meta.value()?.parse::<LitStr>()?.value();
-                rename_all_opt = Some(RenameRuleValue::Rule(rule_str));
+                rename_all_opt = Some(meta.value()?.parse::<LitStr>()?.value());
             } else if !meta.path.is_ident("tag")
                 && !meta.path.is_ident("content")
                 && !meta.path.is_ident("untagged")
@@ -572,7 +552,7 @@ fn parse_type_attributes(
         None => quote! { None },
     };
     let rename_all_quote = match &rename_all_opt {
-        Some(RenameRuleValue::Rule(s)) => {
+        Some(s) => {
             quote! { Some(::reflect_to::RenameRuleValue::Rule(#s.to_string())) }
         }
         _ => quote! { None },

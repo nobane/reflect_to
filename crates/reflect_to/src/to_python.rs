@@ -11,10 +11,8 @@ use std::{
     io::{self, Write},
     path::Path,
 };
-use thiserror::Error;
 
-// --- Error Handling ---
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum ToPythonError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
@@ -32,17 +30,13 @@ pub enum ToPythonError {
     Dependency(String),
 }
 
-// --- Python Generator ---
-
-/// Generates Python type stub (`.pyi`) files from Rust types implementing `Reflection`.
+/// Generates Python type stubs from Rust types implementing `Reflection`.
 #[derive(Default)]
 pub struct ToPython {
     /// Stores reflection info keyed by TypeId.
     type_map: HashMap<TypeId, TypeInfo>,
     /// Maps a (Python Module Path, Python Type Name) pair to the TypeId.
     name_registry: BTreeMap<(String, String), TypeId>,
-    /// Tracks types currently being processed in `add_type`.
-    visited_type_ids: HashSet<TypeId>,
     /// Maintains insertion order.
     type_id_visit_order: Vec<TypeId>,
 }
@@ -50,13 +44,10 @@ pub struct ToPython {
 // Implement TypeRegistry trait for recursive dependency handling
 impl TypeRegistry for ToPython {
     fn register_type(&mut self, type_id: TypeId, info: TypeInfo) -> Result<(), Box<dyn Error>> {
-        // Skip if already registered or being processed (avoid cycles)
-        if self.type_map.contains_key(&type_id) || self.visited_type_ids.contains(&type_id) {
+        // Skip if already registered or being processed
+        if self.type_map.contains_key(&type_id) {
             return Ok(());
         }
-
-        // Mark as processing to detect cycles
-        self.visited_type_ids.insert(type_id);
 
         // Register the type first
         let py_module_path = info
@@ -86,9 +77,6 @@ impl TypeRegistry for ToPython {
         for add_dependency in &info.dependencies {
             add_dependency(self)?;
         }
-
-        // Done processing this type
-        self.visited_type_ids.remove(&type_id);
 
         Ok(())
     }
@@ -187,11 +175,9 @@ impl ToPython {
             }
         }
 
-        Ok(format!(
-            "{}{}\n",
-            header,
-            output_body.trim_end_matches('\n')
-        ))
+        let body = output_body.trim_end_matches('\n');
+
+        Ok(format!("{header}{body}\n"))
     }
 
     /// Generates the Python definition string for a single TypeInfo, collecting imports.
@@ -211,7 +197,6 @@ impl ToPython {
         }
     }
 
-    // --- Struct Generation (as dataclass) ---
     fn generate_struct_py(
         &self,
         py_name: &str,
@@ -305,7 +290,6 @@ impl ToPython {
         Ok(definition)
     }
 
-    // --- Enum Generation ---
     fn generate_enum_py(
         &self,
         py_name: &str,
@@ -614,7 +598,6 @@ impl ToPython {
         }
     }
 
-    // --- TypeRef to Python String Conversion ---
     fn get_py_type_str(
         &self,
         type_ref: &TypeRef,
@@ -769,8 +752,6 @@ impl ToPython {
         Ok(())
     }
 }
-
-// --- Standalone Helper Functions ---
 
 /// Adds an import to the required imports map.
 fn add_import(imports: &mut BTreeMap<String, HashSet<String>>, module: &str, item: &str) {

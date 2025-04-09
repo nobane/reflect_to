@@ -6,7 +6,7 @@ use crate::{
 
 use std::{
     any::TypeId,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     error::Error,
     fs::File,
     io::{self, Write},
@@ -42,8 +42,6 @@ pub struct ToTypescript {
     type_map: HashMap<TypeId, TypeInfo>,
     /// Maps a (ModulePath, TypeName) pair to the TypeId for lookup during generation.
     type_registry: BTreeMap<TypeKey, TypeId>,
-    /// Tracks types currently being processed in `add_type` to detect cycles.
-    visited_type_ids: HashSet<TypeId>,
     /// Maintains insertion order for somewhat stable output. Keyed by TypeId.
     type_id_visit_order: Vec<TypeId>,
 }
@@ -51,21 +49,18 @@ pub struct ToTypescript {
 // Implement TypeRegistry trait for recursive dependency handling
 impl TypeRegistry for ToTypescript {
     fn register_type(&mut self, type_id: TypeId, info: TypeInfo) -> Result<(), Box<dyn Error>> {
-        // Skip if already registered or being processed (avoid cycles)
-        if self.type_map.contains_key(&type_id) || self.visited_type_ids.contains(&type_id) {
+        // Skip if already registered or being processed
+        if self.type_map.contains_key(&type_id) {
             return Ok(());
         }
-
-        // Mark as processing
-        self.visited_type_ids.insert(type_id);
 
         // Add to registry
         let ts_module_path = info.module_path.replace("::", ".");
         let ts_name = info.name.clone();
-        let name_key = (ts_module_path, ts_name);
+        let type_key = (ts_module_path, ts_name);
 
         // Check for name collisions
-        if let Some(existing_id) = self.type_registry.get(&name_key) {
+        if let Some(existing_id) = self.type_registry.get(&type_key) {
             if *existing_id != type_id {
                 eprintln!(
                     "Warning: TS Type name collision for '{}' in module '{}'. Overwriting.",
@@ -75,20 +70,19 @@ impl TypeRegistry for ToTypescript {
         }
 
         // Register the type first
-        self.type_registry.insert(name_key, type_id);
+        self.type_registry.insert(type_key.clone(), type_id);
         self.type_map.insert(type_id, info.clone());
-        self.type_id_visit_order.push(type_id);
 
         // Process dependencies recursively
         for add_dependency in &info.dependencies {
             if let Err(e) = add_dependency(self) {
-                self.visited_type_ids.remove(&type_id);
+                self.type_map.remove(&type_id);
+                self.type_registry.remove(&type_key);
                 return Err(e);
             }
         }
 
-        // Done processing
-        self.visited_type_ids.remove(&type_id);
+        self.type_id_visit_order.push(type_id);
 
         Ok(())
     }
@@ -180,9 +174,9 @@ impl ToTypescript {
                         }
                     }
                     Err(e) => {
-                        eprintln!("Error generating TS for type '{}': {}", info.name, e);
+                        eprintln!("Error generating TS for type '{}': {e}", info.name);
                         let error_comment =
-                            format!("// Error generating type {}: {}\n", info.name, e);
+                            format!("// Error generating type {}: {e}\n", info.name);
                         if is_namespaced {
                             output.push_str("  ");
                         }

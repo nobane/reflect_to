@@ -6,8 +6,8 @@
 - Builds upon a reusable foundations to perform [rtti](https://en.wikipedia.org/wiki/Run-time_type_information) in rust.
 - Supported language type conversions:
     - typescript via `typescript`flag (on by default)
-    - python via `python` flag (on by default)
-- **NOTE**: Still an active WIP!
+    - python via `python` flag
+        - **NOTE**: Still an active WIP!
 
 # Typescript Example
 
@@ -43,7 +43,7 @@ pub struct UserPost {
 }
 
 #[derive(Reflect, Serialize, Deserialize, Debug, Clone)]
-#[serde(rename = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub struct UserSettings {
     theme_path: PathBuf,
     email_notifications: bool,

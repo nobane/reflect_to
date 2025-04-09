@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "reflect_macro"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "reflect_to"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "once_cell",
  "reflect_macro",

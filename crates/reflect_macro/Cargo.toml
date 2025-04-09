@@ -1,9 +1,9 @@
 [package]
 name = "reflect_macro"
-version = "0.1.2"
+version = "0.1.4"
 edition = "2021"
 authors = ["nobane"]
-description = "Derive macro for the reflect_to framework"
+description = "Reflect derive macro for `reflect_to`"
 license = "MIT"
 
 [lib]

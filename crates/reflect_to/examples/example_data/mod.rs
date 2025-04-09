@@ -27,7 +27,7 @@ pub struct UserPost {
 }
 
 #[derive(Reflect, Serialize, Deserialize, Debug, Clone)]
-#[serde(rename = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub struct UserSettings {
     theme_path: PathBuf,
     email_notifications: bool,
