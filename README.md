@@ -77,8 +77,8 @@ export interface UserPost {
 }
 
 export interface UserSettings {
-    theme_path: string;
-    email_notifications: boolean;
+    themePath: string
+    emailNotifications: boolean
     custom: Record<string, string>;
 }
 ```

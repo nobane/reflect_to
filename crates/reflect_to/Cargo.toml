@@ -1,10 +1,11 @@
 [package]
 name = "reflect_to"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 authors = ["nobane"]
 description = "Run-time type reflection and conversion"
 license = "MIT"
+readme = "../../README.md"
 
 [features]
 default = ["to_typescript", "to_python"]
