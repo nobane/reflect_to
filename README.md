@@ -2,10 +2,11 @@
 
 
 - Generate type information in other languages based on rust types.
-- Adhere to `serde` serialization behaviors.
+    - Adhere to `serde` serialization behaviors whenever possible.
+- Core `reflect_to` crate to use [rtti](https://en.wikipedia.org/wiki/Run-time_type_information) in rust.
 - Supported language types:
-    - typescript via `to_typescript`
-    - python via `to_python`
+    - typescript via `to_typescript` crate
+    - python via `to_python` crate
 
 # Typescript Example
 
