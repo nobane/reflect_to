@@ -1,0 +1,16 @@
+[package]
+name = "reflect_macro"
+version = "0.1.2"
+edition = "2021"
+authors = ["nobane"]
+description = "Derive macro for the reflect_to framework"
+license = "MIT"
+
+[lib]
+path = "reflect_macro.rs"
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }

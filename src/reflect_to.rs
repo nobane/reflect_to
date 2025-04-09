@@ -220,7 +220,6 @@ pub enum EnumRepresentation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenameRuleValue {
     Rule(String), // "lowercase", "UPPERCASE", "PascalCase", ...
-    None,
 }
 
 /// Converts a string to PascalCase.
@@ -320,6 +319,6 @@ pub fn apply_rename_rule(original: &str, rule: &Option<RenameRuleValue>) -> Opti
                 None
             }
         },
-        Some(RenameRuleValue::None) | None => None,
+        None => None,
     }
 }

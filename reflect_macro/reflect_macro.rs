@@ -5,7 +5,11 @@ use syn::{
     GenericArgument, LitStr, Meta, PathArguments, Type, Variant,
 };
 
-use __internals::RenameRuleValue;
+/// Represents the different Serde rename_all strategies (as strings).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RenameRuleValue {
+    Rule(String), // "lowercase", "UPPERCASE", "PascalCase", ...
+}
 
 #[proc_macro_derive(Reflect, attributes(serde))]
 pub fn derive_reflect_to(input: TokenStream) -> TokenStream {
@@ -571,7 +575,7 @@ fn parse_type_attributes(
         Some(RenameRuleValue::Rule(s)) => {
             quote! { Some(::reflect_to::RenameRuleValue::Rule(#s.to_string())) }
         }
-        Some(RenameRuleValue::None) | None => quote! { None },
+        _ => quote! { None },
     };
     let other_attrs_quote = other_attrs_map.into_iter().map(|(k, v)| {
         quote! { map.insert(#k.to_string(), #v.to_string()); }

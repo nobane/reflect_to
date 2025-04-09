@@ -1,4 +1,4 @@
-use __internals::{
+use crate::{
     apply_rename_rule, to_pascal_case, to_screaming_snake_case, to_snake_case, DataKind, EnumInfo,
     EnumRepresentation, FieldInfo, FieldsInfo, PrimitiveType, Reflection, RenameRuleValue,
     StructInfo, TypeAttributes, TypeInfo, TypeRef, TypeRegistry, VariantInfo,

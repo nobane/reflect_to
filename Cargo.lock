@@ -3,20 +3,6 @@
 version = 4
 
 [[package]]
-name = "__internals"
-version = "0.1.2"
-
-[[package]]
-name = "__macro"
-version = "0.1.2"
-dependencies = [
- "__internals",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -56,14 +42,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "reflect_macro"
+version = "0.1.2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "reflect_to"
 version = "0.1.2"
 dependencies = [
- "__internals",
- "__macro",
+ "once_cell",
+ "reflect_macro",
+ "regex",
  "serde",
- "to_python",
- "to_typescript",
+ "thiserror",
 ]
 
 [[package]]
@@ -144,27 +139,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "to_python"
-version = "0.1.2"
-dependencies = [
- "__internals",
- "once_cell",
- "serde",
- "thiserror",
-]
-
-[[package]]
-name = "to_typescript"
-version = "0.1.2"
-dependencies = [
- "__internals",
- "once_cell",
- "regex",
- "serde",
- "thiserror",
 ]
 
 [[package]]
