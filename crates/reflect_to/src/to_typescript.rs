@@ -1,118 +1,107 @@
 use crate::{
-    apply_rename_rule, DataKind, EnumInfo, EnumRepresentation, FieldInfo, FieldsInfo,
-    PrimitiveType, Reflection, RenameRuleValue, StructInfo, TypeAttributes, TypeInfo, TypeRef,
-    TypeRegistry, VariantInfo,
+    apply_rename_rule,
+    type_registry::{RegistryError, TypeRegistry},
+    DataKind, EnumInfo, EnumRepresentation, FieldInfo, FieldsInfo, PrimitiveType, Reflection,
+    RenameRuleValue, StructInfo, TypeAttributes, TypeInfo, TypeRef, VariantInfo,
 };
 
-use std::{
-    any::TypeId,
-    collections::{BTreeMap, HashMap},
-    error::Error,
-    fs::File,
-    io::{self, Write},
-    path::Path,
-};
-use thiserror::Error;
-
-// --- Error Handling ---
-#[derive(Error, Debug)]
-pub enum ToTypeScriptError {
-    #[error("I/O error: {0}")]
-    Io(#[from] io::Error),
-    #[error("Type resolution error: {0}")]
-    Resolution(String),
-    #[error("Ambiguous type name '{0}'. Found in modules: [{1}]. Consider using more specific imports or paths.")]
-    AmbiguousTypeName(String, String),
-    #[error("Generation failed for type '{0}': {1}")]
-    GenerationFailed(String, String),
-    #[error("Type with ID {0:?} not found in registry. Was it added?")]
-    TypeNotFound(TypeId),
-    #[error("Dependency Error: {0}")]
-    Dependency(String),
-}
-
-pub type ModuleName = String;
-pub type TypeName = String;
-pub type TypeKey = (ModuleName, TypeName);
+use std::{any::TypeId, collections::BTreeMap, path::Path};
 
 /// Generates TypeScript definitions from Rust types implementing `Reflection`.
-#[derive(Default)]
 pub struct ToTypescript {
-    /// Stores reflection info keyed by TypeId. Using TypeId assumes 'static types.
-    type_map: HashMap<TypeId, TypeInfo>,
-    /// Maps a (ModulePath, TypeName) pair to the TypeId for lookup during generation.
-    type_registry: BTreeMap<TypeKey, TypeId>,
-    /// Maintains insertion order for somewhat stable output. Keyed by TypeId.
-    type_id_visit_order: Vec<TypeId>,
+    /// Shared type registry for dependency tracking and resolution
+    registry: TypeRegistry,
+
+    /// Whether to remove common module prefixes from paths during generation
+    strip_common_prefixes: bool,
 }
 
-// Implement TypeRegistry trait for recursive dependency handling
-impl TypeRegistry for ToTypescript {
-    fn register_type(&mut self, type_id: TypeId, info: TypeInfo) -> Result<(), Box<dyn Error>> {
-        // Skip if already registered or being processed
-        if self.type_map.contains_key(&type_id) {
-            return Ok(());
+impl Default for ToTypescript {
+    fn default() -> Self {
+        Self {
+            registry: Default::default(),
+            strip_common_prefixes: true,
         }
-
-        // Add to registry
-        let ts_module_path = info.module_path.replace("::", ".");
-        let ts_name = info.name.clone();
-        let type_key = (ts_module_path, ts_name);
-
-        // Check for name collisions
-        if let Some(existing_id) = self.type_registry.get(&type_key) {
-            if *existing_id != type_id {
-                eprintln!(
-                    "Warning: TS Type name collision for '{}' in module '{}'. Overwriting.",
-                    info.name, info.module_path
-                );
-            }
-        }
-
-        // Register the type first
-        self.type_registry.insert(type_key.clone(), type_id);
-        self.type_map.insert(type_id, info.clone());
-
-        // Process dependencies recursively
-        for add_dependency in &info.dependencies {
-            if let Err(e) = add_dependency(self) {
-                self.type_map.remove(&type_id);
-                self.type_registry.remove(&type_key);
-                return Err(e);
-            }
-        }
-
-        self.type_id_visit_order.push(type_id);
-
-        Ok(())
     }
 }
 
 impl ToTypescript {
+    /// Creates a new TypeScript generator that will strip common module prefixes.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates a new TypeScript generator that will keep common module prefixes.
+    pub fn with_common_prefixes() -> Self {
+        Self {
+            strip_common_prefixes: false,
+            ..Default::default()
+        }
+    }
+
     /// Adds a Rust type `T` (which must implement `Reflection` and be `'static`)
     /// to the generator. Recursively adds all dependent types.
-    pub fn add_type<T>(&mut self) -> Result<(), ToTypeScriptError>
+    pub fn add_type<T>(&mut self) -> Result<(), RegistryError>
     where
         T: Reflection + 'static,
     {
-        let type_id = TypeId::of::<T>();
-        let info = T::reflect();
-
-        // Use the TypeRegistry trait implementation to handle this type
-        self.register_type(type_id, info)
-            .map_err(|e| ToTypeScriptError::Dependency(e.to_string()))
+        self.registry.add_type::<T>()
     }
 
     /// Generates the final TypeScript code string.
-    pub fn generate(&self) -> Result<String, ToTypeScriptError> {
+    pub fn generate(&self) -> Result<String, RegistryError> {
         let mut output = String::new();
         output.push_str("// DO NOT EDIT: Auto-generated TypeScript definitions\n");
         output.push_str("/* eslint-disable @typescript-eslint/no-namespace */\n\n");
 
+        // First, get all module paths and strip crate:: prefixes
+        let mut module_paths = Vec::new();
+        for type_id in &self.registry.visit_order {
+            if let Some(info) = self.registry.type_info.get(type_id) {
+                let stripped_path = TypeRegistry::strip_crate_prefix(&info.module_path).to_string();
+                if !stripped_path.is_empty() && !module_paths.contains(&stripped_path) {
+                    module_paths.push(stripped_path);
+                }
+            }
+        }
+
+        // Detect common prefix if setting enabled
+        let common_prefix = if self.strip_common_prefixes {
+            TypeRegistry::detect_common_prefix(&module_paths)
+        } else {
+            None
+        };
+
+        // Log the common prefix for debugging
+        if let Some(ref prefix) = common_prefix {
+            eprintln!("Detected common prefix: '{}'", prefix);
+        } else {
+            println!("{module_paths:?} {}", self.strip_common_prefixes);
+        }
+
+        // Now process types with prefixes handled
         let mut modules: BTreeMap<String, Vec<TypeId>> = BTreeMap::new();
-        for type_id in &self.type_id_visit_order {
-            if let Some(info) = self.type_map.get(type_id) {
-                let ts_module_path = info.module_path.replace("::", ".");
+        for type_id in &self.registry.visit_order {
+            if let Some(info) = self.registry.type_info.get(type_id) {
+                // Process module path according to settings
+                let mut ts_module_path =
+                    TypeRegistry::strip_crate_prefix(&info.module_path).to_string();
+
+                // Strip common prefix if found
+                if let Some(ref prefix) = common_prefix {
+                    if ts_module_path.starts_with(prefix) {
+                        ts_module_path = ts_module_path[prefix.len()..].to_string();
+                        // Remove leading :: if present
+                        if ts_module_path.starts_with("::") {
+                            ts_module_path = ts_module_path[2..].to_string();
+                        }
+                    }
+                }
+
+                // Convert to TS module path format
+                let ts_module_path = ts_module_path.replace("::", ".");
+
+                // Add to modules
                 modules.entry(ts_module_path).or_default().push(*type_id);
             } else {
                 eprintln!(
@@ -129,11 +118,8 @@ impl ToTypescript {
             }
 
             for type_id in type_ids_in_module {
-                let info = self
-                    .type_map
-                    .get(&type_id)
-                    .ok_or(ToTypeScriptError::TypeNotFound(type_id))?;
-                match self.generate_ts_for_type(info) {
+                let info = self.registry.try_get_type(&type_id)?;
+                match self.generate_ts_for_type(info, &common_prefix) {
                     Ok(definition) => {
                         if !info.docs.is_empty() {
                             if is_namespaced {
@@ -208,21 +194,29 @@ impl ToTypescript {
     }
 
     /// Generates the TypeScript definition string for a single TypeInfo.
-    fn generate_ts_for_type(&self, info: &TypeInfo) -> Result<String, ToTypeScriptError> {
-        let ts_name = self.get_local_ts_name(info)?;
+    fn generate_ts_for_type(
+        &self,
+        info: &TypeInfo,
+        common_prefix: &Option<String>,
+    ) -> Result<String, RegistryError> {
+        let ts_name = &info.name;
         match &info.data {
-            DataKind::Struct(s_info) => self.generate_struct_ts(&ts_name, s_info, &info.attributes),
-            DataKind::Enum(e_info) => self.generate_enum_ts(&ts_name, e_info, &info.attributes),
+            DataKind::Struct(s_info) => {
+                self.generate_struct_ts(ts_name, s_info, &info.attributes, common_prefix)
+            }
+            DataKind::Enum(e_info) => {
+                self.generate_enum_ts(ts_name, e_info, &info.attributes, common_prefix)
+            }
         }
     }
 
-    // --- Struct Generation ---
     fn generate_struct_ts(
         &self,
         ts_name: &str,
         s_info: &StructInfo,
         type_attrs: &TypeAttributes,
-    ) -> Result<String, ToTypeScriptError> {
+        common_prefix: &Option<String>,
+    ) -> Result<String, RegistryError> {
         let rename_all_rule = &type_attrs.rename_all;
         match &s_info.fields {
             FieldsInfo::Named(fields) => {
@@ -232,12 +226,12 @@ impl ToTypescript {
                         continue;
                     }
                     let field_name_rust = field.name.as_ref().ok_or_else(|| {
-                        ToTypeScriptError::GenerationFailed(
+                        RegistryError::GenerationFailed(
                             ts_name.to_string(),
                             "Named field missing name".into(),
                         )
                     })?;
-                    let field_type_ts = self.get_ts_type_str(&field.ty)?;
+                    let field_type_ts = self.get_ts_type_str(&field.ty, common_prefix)?;
 
                     // Handle temporary String correctly
                     let field_rename = field.attributes.rename.clone(); // Clone Option<String>
@@ -259,11 +253,13 @@ impl ToTypescript {
             }
             FieldsInfo::Unnamed(fields) => {
                 if fields.len() == 1 {
-                    let inner_type_ts = self.get_ts_type_str(&fields[0].ty)?;
+                    let inner_type_ts = self.get_ts_type_str(&fields[0].ty, common_prefix)?;
                     Ok(format!("export type {} = {}", ts_name, inner_type_ts))
                 } else {
-                    let types: Result<Vec<String>, _> =
-                        fields.iter().map(|f| self.get_ts_type_str(&f.ty)).collect();
+                    let types: Result<Vec<String>, _> = fields
+                        .iter()
+                        .map(|f| self.get_ts_type_str(&f.ty, common_prefix))
+                        .collect();
                     Ok(format!("export type {} = [{}]", ts_name, types?.join(", ")))
                 }
             }
@@ -271,13 +267,13 @@ impl ToTypescript {
         }
     }
 
-    // --- Enum Generation ---
     fn generate_enum_ts(
         &self,
         ts_name: &str,
         e_info: &EnumInfo,
         type_attrs: &TypeAttributes,
-    ) -> Result<String, ToTypeScriptError> {
+        common_prefix: &Option<String>,
+    ) -> Result<String, RegistryError> {
         let rename_all_rule = &type_attrs.rename_all;
         let representation = &e_info.representation;
         let is_simple_c_like = e_info
@@ -286,7 +282,7 @@ impl ToTypescript {
             .all(|v| matches!(v.fields, FieldsInfo::Unit));
 
         if is_simple_c_like && *representation == EnumRepresentation::ExternallyTagged {
-            let results: Result<Vec<Option<String>>, ToTypeScriptError> = e_info
+            let results: Result<Vec<Option<String>>, RegistryError> = e_info
                 .variants
                 .iter()
                 .map(|variant| {
@@ -314,7 +310,7 @@ impl ToTypescript {
             ))
         } else {
             // Complex enum generation (discriminated union)
-            let variant_defs_results: Result<Vec<String>, ToTypeScriptError> = e_info
+            let variant_defs_results: Result<Vec<String>, RegistryError> = e_info
                 .variants
                 .iter()
                 .filter_map(|variant| {
@@ -322,7 +318,12 @@ impl ToTypescript {
                     if variant.attributes.skip || variant.attributes.skip_serializing {
                         return None;
                     }
-                    Some(self.generate_variant_def_ts(variant, representation, rename_all_rule))
+                    Some(self.generate_variant_def_ts(
+                        variant,
+                        representation,
+                        rename_all_rule,
+                        common_prefix,
+                    ))
                 })
                 .collect(); // Collect results for non-skipped variants
 
@@ -346,7 +347,8 @@ impl ToTypescript {
         variant: &VariantInfo,
         representation: &EnumRepresentation,
         enum_rename_all_rule: &Option<RenameRuleValue>,
-    ) -> Result<String, ToTypeScriptError> {
+        common_prefix: &Option<String>,
+    ) -> Result<String, RegistryError> {
         let variant_name_rust = &variant.name;
         // Handle temporary String correctly
         let variant_rename = variant.attributes.rename.clone();
@@ -355,7 +357,8 @@ impl ToTypescript {
             .or(rule_rename)
             .unwrap_or_else(|| variant_name_rust.to_string());
 
-        let data_ts_type = self.get_variant_data_ts_type(&variant.fields, enum_rename_all_rule)?;
+        let data_ts_type =
+            self.get_variant_data_ts_type(&variant.fields, enum_rename_all_rule, common_prefix)?;
 
         match representation {
             EnumRepresentation::ExternallyTagged => match variant.fields {
@@ -392,15 +395,16 @@ impl ToTypescript {
         &self,
         fields: &FieldsInfo,
         enum_rename_all_rule: &Option<RenameRuleValue>,
-    ) -> Result<String, ToTypeScriptError> {
+        common_prefix: &Option<String>,
+    ) -> Result<String, RegistryError> {
         match fields {
             FieldsInfo::Named(named_fields) => {
-                let field_defs: Result<Vec<String>, ToTypeScriptError> = named_fields
+                let field_defs: Result<Vec<String>, RegistryError> = named_fields
                     .iter()
                     .filter(|f| !f.attributes.skip && !f.attributes.skip_serializing)
                     .map(|field| {
                         let field_name_rust = field.name.as_ref().unwrap();
-                        let field_type_ts = self.get_ts_type_str(&field.ty)?;
+                        let field_type_ts = self.get_ts_type_str(&field.ty, common_prefix)?;
                         // Handle temporary String correctly
                         let field_rename = field.attributes.rename.clone();
                         let rule_rename = apply_rename_rule(field_name_rust, enum_rename_all_rule);
@@ -428,11 +432,11 @@ impl ToTypescript {
                 }
                 // All fields skipped
                 else if active_fields.len() == 1 {
-                    self.get_ts_type_str(&active_fields[0].ty)
+                    self.get_ts_type_str(&active_fields[0].ty, common_prefix)
                 } else {
                     let types: Result<Vec<String>, _> = active_fields
                         .iter()
-                        .map(|f| self.get_ts_type_str(&f.ty))
+                        .map(|f| self.get_ts_type_str(&f.ty, common_prefix))
                         .collect();
                     Ok(format!("[{}]", types?.join(", ")))
                 }
@@ -441,8 +445,11 @@ impl ToTypescript {
         }
     }
 
-    // --- TypeRef to TypeScript String Conversion ---
-    fn get_ts_type_str(&self, type_ref: &TypeRef) -> Result<String, ToTypeScriptError> {
+    fn get_ts_type_str(
+        &self,
+        type_ref: &TypeRef,
+        common_prefix: &Option<String>,
+    ) -> Result<String, RegistryError> {
         match type_ref {
             TypeRef::Primitive(p) => Ok(map_primitive_to_ts(p).to_string()),
             TypeRef::Path {
@@ -453,19 +460,70 @@ impl ToTypescript {
             } => {
                 // If we have the TypeId from the macro, use it directly
                 if let Some(tid) = type_id {
-                    if let Some(info) = self.type_map.get(tid) {
-                        let ts_module = info.module_path.replace("::", ".");
-                        if ts_module.is_empty() {
-                            return Ok(info.name.clone());
-                        } else {
-                            return Ok(format!("{}.{}", ts_module, info.name));
+                    if let Some(info) = self.registry.type_info.get(tid) {
+                        // Process the module path (strip crate:: prefix and common prefix)
+                        let mut module_path =
+                            TypeRegistry::strip_crate_prefix(&info.module_path).to_string();
+
+                        // Strip common prefix if found
+                        if let Some(ref prefix) = common_prefix {
+                            if module_path.starts_with(prefix) {
+                                module_path = module_path[prefix.len()..].to_string();
+                                // Remove leading :: if present
+                                if module_path.starts_with("::") {
+                                    module_path = module_path[2..].to_string();
+                                }
+                            }
                         }
+
+                        let ts_module = module_path.replace("::", ".");
+                        return if ts_module.is_empty() {
+                            Ok(info.name.clone())
+                        } else {
+                            Ok(format!("{ts_module}.{}", info.name))
+                        };
                     }
                 }
 
-                // Otherwise, fall back to path resolution
+                // Otherwise, fall back to path resolution based on name
                 if *is_reflect_to {
-                    self.resolve_type_path(path)
+                    let type_name_part = if let Some(last_colon) = path.rfind("::") {
+                        &path[last_colon + 2..]
+                    } else {
+                        path
+                    };
+
+                    // Try to find the type by name
+                    if let Some(type_id) = self.registry.find_type_by_name(type_name_part) {
+                        if let Some(info) = self.registry.get_type(&type_id) {
+                            // Process the module path (strip crate:: prefix and common prefix)
+                            let mut module_path =
+                                TypeRegistry::strip_crate_prefix(&info.module_path).to_string();
+
+                            // Strip common prefix if found
+                            if let Some(ref prefix) = common_prefix {
+                                if module_path.starts_with(prefix) {
+                                    module_path = module_path[prefix.len()..].to_string();
+                                    // Remove leading :: if present
+                                    if module_path.starts_with("::") {
+                                        module_path = module_path[2..].to_string();
+                                    }
+                                }
+                            }
+
+                            let ts_module = module_path.replace("::", ".");
+                            return if ts_module.is_empty() {
+                                Ok(info.name.clone())
+                            } else {
+                                Ok(format!("{ts_module}.{}", info.name))
+                            };
+                        }
+                    }
+
+                    // If type not found, return an error
+                    Err(RegistryError::Resolution(format!(
+                        "Type {path:?} not found in registry",
+                    )))
                 } else {
                     // Handle known non-reflect-to paths if they slip through
                     eprintln!("Warning: Non-reflect_to path '{}' encountered directly. Mapping to 'any'. Consider using specific TypeRef variants (Option, Vec, etc.).", path);
@@ -476,25 +534,32 @@ impl ToTypescript {
                 if elems.is_empty() {
                     Ok("null".to_string())
                 } else {
-                    let elem_types: Result<Vec<String>, _> =
-                        elems.iter().map(|t| self.get_ts_type_str(t)).collect();
+                    let elem_types: Result<Vec<String>, _> = elems
+                        .iter()
+                        .map(|t| self.get_ts_type_str(t, common_prefix))
+                        .collect();
                     Ok(format!("[{}]", elem_types?.join(", ")))
                 }
             }
-            TypeRef::Array { elem_type, .. } | TypeRef::Vec(elem_type) => {
-                Ok(format!("{}[]", self.get_ts_type_str(elem_type)?))
-            }
-            TypeRef::Option(inner) => Ok(format!("{} | null", self.get_ts_type_str(inner)?)),
-            TypeRef::Result { ok_type, .. } => {
-                Ok(format!("{} | null", self.get_ts_type_str(ok_type)?))
-            }
-            TypeRef::Box(inner) => self.get_ts_type_str(inner),
+            TypeRef::Array { elem_type, .. } | TypeRef::Vec(elem_type) => Ok(format!(
+                "{}[]",
+                self.get_ts_type_str(elem_type, common_prefix)?
+            )),
+            TypeRef::Option(inner) => Ok(format!(
+                "{} | null",
+                self.get_ts_type_str(inner, common_prefix)?
+            )),
+            TypeRef::Result { ok_type, .. } => Ok(format!(
+                "{} | null",
+                self.get_ts_type_str(ok_type, common_prefix)?
+            )),
+            TypeRef::Box(inner) => self.get_ts_type_str(inner, common_prefix),
             TypeRef::Map {
                 key_type,
                 value_type,
             } => {
-                let key_ts = self.get_ts_type_str(key_type)?;
-                let value_ts = self.get_ts_type_str(value_type)?;
+                let key_ts = self.get_ts_type_str(key_type, common_prefix)?;
+                let value_ts = self.get_ts_type_str(value_type, common_prefix)?;
                 if key_ts == "string" || key_ts == "number" {
                     Ok(format!("Record<{}, {}>", key_ts, value_ts))
                 } else {
@@ -511,74 +576,10 @@ impl ToTypescript {
         }
     }
 
-    /// Resolves a Rust path string to a fully qualified TS name.
-    fn resolve_type_path(&self, rust_path_str: &str) -> Result<String, ToTypeScriptError> {
-        let (rust_mod_part, type_name_part) = if let Some(last_colon) = rust_path_str.rfind("::") {
-            let mod_path = rust_path_str[..last_colon]
-                .strip_prefix("crate::")
-                .unwrap_or(&rust_path_str[..last_colon]);
-            (mod_path, &rust_path_str[last_colon + 2..])
-        } else {
-            ("", rust_path_str)
-        };
-        let ts_mod_part = rust_mod_part.replace("::", ".");
-
-        let exact_key = (ts_mod_part.clone(), type_name_part.to_string());
-        if let Some(type_id) = self.type_registry.get(&exact_key) {
-            return self.get_fully_qualified_ts_name(*type_id);
-        }
-
-        let mut matches = Vec::new();
-        for ((_reg_mod, reg_name), type_id) in &self.type_registry {
-            if reg_name == type_name_part {
-                matches.push(*type_id);
-            }
-        }
-
-        match matches.len() {
-            0 => Err(ToTypeScriptError::Resolution(format!(
-                "Type '{}' ({}.{}) not registered",
-                rust_path_str, ts_mod_part, type_name_part
-            ))),
-            1 => self.get_fully_qualified_ts_name(matches[0]),
-            _ => {
-                let possible = matches
-                    .iter()
-                    .map(|id| self.get_fully_qualified_ts_name(*id).unwrap_or_default())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                Err(ToTypeScriptError::AmbiguousTypeName(
-                    type_name_part.to_string(),
-                    possible,
-                ))
-            }
-        }
-    }
-
-    /// Gets the fully qualified TypeScript name for a registered TypeId.
-    fn get_fully_qualified_ts_name(&self, type_id: TypeId) -> Result<String, ToTypeScriptError> {
-        let info = self
-            .type_map
-            .get(&type_id)
-            .ok_or(ToTypeScriptError::TypeNotFound(type_id))?;
-        let ts_module = info.module_path.replace("::", ".");
-        if ts_module.is_empty() {
-            Ok(info.name.clone())
-        } else {
-            Ok(format!("{}.{}", ts_module, info.name))
-        }
-    }
-
-    /// Gets the local TypeScript name for use within its own definition.
-    fn get_local_ts_name(&self, info: &TypeInfo) -> Result<String, ToTypeScriptError> {
-        Ok(info.name.clone())
-    }
-
     /// Writes the generated TypeScript definitions to the specified file path.
-    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), ToTypeScriptError> {
+    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), RegistryError> {
         let output = self.generate()?;
-        File::create(path)?.write_all(output.as_bytes())?;
-        Ok(())
+        self.registry.write_to_file(path, &output)
     }
 }
 

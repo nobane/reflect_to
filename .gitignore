@@ -1,3 +1,4 @@
 /target
-/reflect_macro/target
+/crates/**/target
 .trash
+/tmp

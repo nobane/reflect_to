@@ -3,7 +3,7 @@
 
 - Generate type information in other languages based on rust types.
     - Adhere to `serde` serialization behaviors whenever possible.
-- Builds upon a reusable foundations to perform [rtti](https://en.wikipedia.org/wiki/Run-time_type_information) in rust.
+- Builds upon a reusable [rtti](https://en.wikipedia.org/wiki/Run-time_type_information) foundation in rust.
 - Supported language type conversions:
     - typescript via `typescript`flag (on by default)
     - python via `python` flag

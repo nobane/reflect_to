@@ -1,3 +1,4 @@
+// crates/reflect_macro/src/lib.rs
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{
@@ -98,10 +99,10 @@ fn generate_dependency_adders(input: &DeriveInput) -> proc_macro2::TokenStream {
         let adders = dependencies.iter().map(|dep_type| {
             let type_path_tokens = &dep_type.path;
             quote! {
-                |registry: &mut dyn ::reflect_to::TypeRegistry| -> Result<(), Box<dyn std::error::Error>> {
+                |registry: &mut dyn ::reflect_to::Visit| -> Result<(), Box<dyn std::error::Error>> {
                     let type_id = <#type_path_tokens as ::reflect_to::Reflection>::type_id();
                     let info = <#type_path_tokens as ::reflect_to::Reflection>::reflect();
-                    registry.register_type(type_id, info)?;
+                    registry.visit_type(type_id, info)?;
                     Ok(())
                 }
             }

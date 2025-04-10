@@ -1,127 +1,112 @@
 use crate::{
-    apply_rename_rule, to_pascal_case, to_screaming_snake_case, to_snake_case, DataKind, EnumInfo,
-    EnumRepresentation, FieldInfo, FieldsInfo, PrimitiveType, Reflection, RenameRuleValue,
-    StructInfo, TypeAttributes, TypeInfo, TypeRef, TypeRegistry, VariantInfo,
+    apply_rename_rule, to_pascal_case, to_screaming_snake_case, to_snake_case,
+    type_registry::{RegistryError, TypeRegistry},
+    DataKind, EnumInfo, EnumRepresentation, FieldInfo, FieldsInfo, PrimitiveType, Reflection,
+    RenameRuleValue, StructInfo, TypeAttributes, TypeInfo, TypeRef, VariantInfo,
 };
 use std::{
-    any::TypeId,
-    collections::{BTreeMap, HashMap, HashSet},
-    error::Error,
-    fs::File,
-    io::{self, Write},
+    collections::{BTreeMap, HashSet},
     path::Path,
 };
 
-#[derive(thiserror::Error, Debug)]
-pub enum ToPythonError {
-    #[error("I/O error: {0}")]
-    Io(#[from] io::Error),
-    #[error("Type resolution error: {0}")]
-    Resolution(String),
-    #[error("Ambiguous type name '{0}'. Found in modules: [{1}].")]
-    AmbiguousTypeName(String, String),
-    #[error("Generation failed for type '{0}': {1}")]
-    GenerationFailed(String, String),
-    #[error("Type with ID {0:?} not found in registry.")]
-    TypeNotFound(TypeId),
-    #[error("Unsupported feature for Python generation: {0}")]
-    Unsupported(String),
-    #[error("Dependency Error: {0}")]
-    Dependency(String),
-}
-
 /// Generates Python type stubs from Rust types implementing `Reflection`.
-#[derive(Default)]
 pub struct ToPython {
-    /// Stores reflection info keyed by TypeId.
-    type_map: HashMap<TypeId, TypeInfo>,
-    /// Maps a (Python Module Path, Python Type Name) pair to the TypeId.
-    name_registry: BTreeMap<(String, String), TypeId>,
-    /// Maintains insertion order.
-    type_id_visit_order: Vec<TypeId>,
+    /// Shared type registry for dependency tracking and resolution
+    registry: TypeRegistry,
+
+    /// Whether to remove common module prefixes from paths during generation
+    strip_common_prefixes: bool,
 }
 
-// Implement TypeRegistry trait for recursive dependency handling
-impl TypeRegistry for ToPython {
-    fn register_type(&mut self, type_id: TypeId, info: TypeInfo) -> Result<(), Box<dyn Error>> {
-        // Skip if already registered or being processed
-        if self.type_map.contains_key(&type_id) {
-            return Ok(());
+impl Default for ToPython {
+    fn default() -> Self {
+        Self {
+            registry: Default::default(),
+            strip_common_prefixes: true,
         }
-
-        // Register the type first
-        let py_module_path = info
-            .module_path
-            .strip_prefix("crate::")
-            .unwrap_or(&info.module_path)
-            .replace("::", ".");
-        let py_name = info.name.clone();
-        let name_key = (py_module_path, py_name);
-
-        // Check for name collisions
-        if let Some(existing_id) = self.name_registry.get(&name_key) {
-            if *existing_id != type_id {
-                eprintln!(
-                    "Warning: Python type name collision for '{}' in module '{}'. Overwriting.",
-                    info.name, info.module_path
-                );
-            }
-        }
-
-        // Register the type
-        self.name_registry.insert(name_key, type_id);
-        self.type_map.insert(type_id, info.clone());
-        self.type_id_visit_order.push(type_id);
-
-        // Process dependencies recursively
-        for add_dependency in &info.dependencies {
-            add_dependency(self)?;
-        }
-
-        Ok(())
     }
 }
 
 impl ToPython {
+    /// Creates a new Python generator that will strip common module prefixes.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates a new Python generator that will keep common module prefixes.
+    pub fn with_common_prefixes() -> Self {
+        Self {
+            strip_common_prefixes: false,
+            ..Default::default()
+        }
+    }
+
     /// Adds a Rust type `T` to the generator.
-    pub fn add_type<T>(&mut self) -> Result<(), ToPythonError>
+    pub fn add_type<T>(&mut self) -> Result<(), RegistryError>
     where
         T: Reflection + 'static,
     {
-        let type_id = TypeId::of::<T>();
-        let info = T::reflect();
-
-        // Use the TypeRegistry trait implementation to handle this type
-        self.register_type(type_id, info)
-            .map_err(|e| ToPythonError::Dependency(e.to_string()))
+        self.registry.add_type::<T>()
     }
 
     /// Generates the final Python type stub (`.pyi`) string.
-    pub fn generate(&self) -> Result<String, ToPythonError> {
+    pub fn generate(&self) -> Result<String, RegistryError> {
         let mut imports: BTreeMap<String, HashSet<String>> = BTreeMap::new();
         let mut generated_bodies = BTreeMap::new();
 
-        for type_id in &self.type_id_visit_order {
-            let info = self
-                .type_map
-                .get(type_id)
-                .ok_or(ToPythonError::TypeNotFound(*type_id))?;
+        // First, get all module paths and strip crate:: prefixes
+        let mut module_paths = Vec::new();
+        for type_id in &self.registry.visit_order {
+            if let Some(info) = self.registry.type_info.get(type_id) {
+                let stripped_path = TypeRegistry::strip_crate_prefix(&info.module_path).to_string();
+                if !stripped_path.is_empty() && !module_paths.contains(&stripped_path) {
+                    module_paths.push(stripped_path);
+                }
+            }
+        }
+
+        // Detect common prefix if setting enabled
+        let common_prefix = if self.strip_common_prefixes {
+            TypeRegistry::detect_common_prefix(&module_paths)
+        } else {
+            None
+        };
+
+        for type_id in &self.registry.visit_order {
+            let info = self.registry.try_get_type(type_id)?;
             match self.generate_py_for_type(info, &mut imports) {
                 Ok(definition) => {
-                    let py_module = info
-                        .module_path
-                        .strip_prefix("crate::")
-                        .unwrap_or(&info.module_path)
-                        .replace("::", ".");
+                    // Process module path with common prefix stripping if needed
+                    let mut py_module =
+                        TypeRegistry::strip_crate_prefix(&info.module_path).to_string();
+
+                    // Strip common prefix if found
+                    if let Some(ref prefix) = common_prefix {
+                        if py_module.starts_with(prefix) {
+                            py_module = py_module[prefix.len()..].to_string();
+                        }
+                    }
+
+                    // Convert to Python module path format
+                    let py_module = py_module.replace("::", ".");
+
                     generated_bodies.insert((py_module, info.name.clone()), definition);
                 }
                 Err(e) => {
                     eprintln!("Error generating Python for type '{}': {}", info.name, e);
-                    let py_module = info
-                        .module_path
-                        .strip_prefix("crate::")
-                        .unwrap_or(&info.module_path)
-                        .replace("::", ".");
+                    let mut py_module =
+                        TypeRegistry::strip_crate_prefix(&info.module_path).to_string();
+
+                    // Strip common prefix if found
+                    if let Some(ref prefix) = common_prefix {
+                        if py_module.starts_with(prefix) {
+                            py_module = py_module[prefix.len()..].to_string();
+                        }
+                    }
+
+                    // Convert to Python module path format
+                    let py_module = py_module.replace("::", ".");
+
                     generated_bodies.insert(
                         (py_module, info.name.clone()),
                         format!("# Error generating type {}: {}\n", info.name, e),
@@ -185,7 +170,7 @@ impl ToPython {
         &self,
         info: &TypeInfo,
         imports: &mut BTreeMap<String, HashSet<String>>,
-    ) -> Result<String, ToPythonError> {
+    ) -> Result<String, RegistryError> {
         let py_name = &info.name;
         match &info.data {
             DataKind::Struct(s_info) => {
@@ -204,7 +189,7 @@ impl ToPython {
         type_attrs: &TypeAttributes,
         docs: &[String],
         imports: &mut BTreeMap<String, HashSet<String>>,
-    ) -> Result<String, ToPythonError> {
+    ) -> Result<String, RegistryError> {
         add_import(imports, "dataclasses", "dataclass");
         let mut definition = String::new();
         definition.push_str("@dataclass(frozen=True) # Assuming immutable struct\n");
@@ -229,7 +214,7 @@ impl ToPython {
                     }
                     has_fields = true;
                     let field_name_rust = field.name.as_ref().ok_or_else(|| {
-                        ToPythonError::GenerationFailed(
+                        RegistryError::GenerationFailed(
                             py_name.into(),
                             "Named field missing name".into(),
                         )
@@ -297,7 +282,7 @@ impl ToPython {
         type_attrs: &TypeAttributes,
         docs: &[String],
         imports: &mut BTreeMap<String, HashSet<String>>,
-    ) -> Result<String, ToPythonError> {
+    ) -> Result<String, RegistryError> {
         let rename_all_rule = &type_attrs.rename_all;
         let representation = &e_info.representation;
         let is_simple_c_like = e_info
@@ -433,7 +418,7 @@ impl ToPython {
         enum_rename_all_rule: &Option<RenameRuleValue>,
         serialized_variant_name: &str,
         imports: &mut BTreeMap<String, HashSet<String>>,
-    ) -> Result<(String, Option<String>), ToPythonError> {
+    ) -> Result<(String, Option<String>), RegistryError> {
         let variant_name_pascal = to_pascal_case(&variant.name);
         let helper_type_name = format!("{}{}", enum_name, variant_name_pascal);
 
@@ -556,7 +541,7 @@ impl ToPython {
         fields: &FieldsInfo,
         _enum_rename_all_rule: &Option<RenameRuleValue>,
         imports: &mut BTreeMap<String, HashSet<String>>,
-    ) -> Result<String, ToPythonError> {
+    ) -> Result<String, RegistryError> {
         // Note: enum_rename_all_rule is no longer needed here as we simplify to Dict[str, Any] for named fields
         match fields {
             FieldsInfo::Named(named_fields) => {
@@ -602,7 +587,7 @@ impl ToPython {
         &self,
         type_ref: &TypeRef,
         imports: &mut BTreeMap<String, HashSet<String>>,
-    ) -> Result<String, ToPythonError> {
+    ) -> Result<String, RegistryError> {
         match type_ref {
             TypeRef::Primitive(p) => Ok(map_primitive_to_py(p).to_string()),
             TypeRef::Path {
@@ -613,14 +598,24 @@ impl ToPython {
             } => {
                 // If we have the TypeId from the macro, use it directly
                 if let Some(tid) = type_id {
-                    if let Some(info) = self.type_map.get(tid) {
+                    if let Some(info) = self.registry.type_info.get(tid) {
                         return Ok(info.name.clone());
                     }
                 }
 
                 // Otherwise, fall back to path resolution
                 if *is_reflect_to {
-                    self.resolve_type_path(path)
+                    // For Python we just need the base name
+                    if let Some(last_colon) = path.rfind("::") {
+                        let type_name = &path[last_colon + 2..];
+                        if let Some(type_id) = self.registry.find_type_by_name(type_name) {
+                            return self.registry.get_base_name(type_id);
+                        }
+                    }
+
+                    // If path doesn't have :: or type not found by name
+                    add_import(imports, "typing", "Any");
+                    Ok("Any".to_string())
                 } else {
                     add_import(imports, "typing", "Any");
                     Ok("Any".to_string())
@@ -690,66 +685,10 @@ impl ToPython {
         }
     }
 
-    /// Resolves a Rust path string to a Python name (just base name for single file).
-    fn resolve_type_path(&self, rust_path_str: &str) -> Result<String, ToPythonError> {
-        let (_rust_mod_part, type_name_part) = if let Some(last_colon) = rust_path_str.rfind("::") {
-            let mod_path = rust_path_str[..last_colon]
-                .strip_prefix("crate::")
-                .unwrap_or(&rust_path_str[..last_colon]);
-            (mod_path, &rust_path_str[last_colon + 2..])
-        } else {
-            ("", rust_path_str)
-        };
-        // We still need to search the registry to ensure the type was added, even if we only use the base name.
-        let py_mod_part = _rust_mod_part.replace("::", "."); // Used for lookup key
-
-        let exact_key = (py_mod_part.clone(), type_name_part.to_string());
-        if let Some(type_id) = self.name_registry.get(&exact_key) {
-            return self.get_base_py_name(*type_id);
-        }
-
-        let mut matches = Vec::new();
-        for ((_reg_mod, reg_name), type_id) in &self.name_registry {
-            if reg_name == type_name_part {
-                matches.push(*type_id);
-            }
-        }
-
-        match matches.len() {
-            0 => Err(ToPythonError::Resolution(format!(
-                "Python type '{}' ({}.{}) not registered",
-                rust_path_str, py_mod_part, type_name_part
-            ))),
-            1 => self.get_base_py_name(matches[0]), // Found one by name, return its base name
-            _ => {
-                let possible = matches
-                    .iter()
-                    .map(|id| self.get_base_py_name(*id).unwrap_or_default())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                Err(ToPythonError::AmbiguousTypeName(
-                    type_name_part.to_string(),
-                    possible,
-                ))
-            }
-        }
-    }
-
-    /// Gets the base Python name for a registered type.
-    fn get_base_py_name(&self, type_id: TypeId) -> Result<String, ToPythonError> {
-        let info = self
-            .type_map
-            .get(&type_id)
-            .ok_or(ToPythonError::TypeNotFound(type_id))?;
-        Ok(info.name.clone())
-    }
-
     /// Writes the generated Python type stubs to the specified file path.
-    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), ToPythonError> {
+    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), RegistryError> {
         let output = self.generate()?;
-        let mut file = File::create(path)?;
-        file.write_all(output.as_bytes())?;
-        Ok(())
+        self.registry.write_to_file(path, &output)
     }
 }
 

@@ -1,4 +1,7 @@
+// crates/reflect_to/src/reflect_to.rs
 use std::{any::TypeId, collections::BTreeMap, error::Error};
+
+use crate::Visit;
 
 /// Trait for types that can provide reflection metadata about themselves.
 ///
@@ -15,12 +18,6 @@ pub trait Reflection {
     {
         TypeId::of::<Self>()
     }
-}
-
-/// Trait for registry implementations that can store types
-pub trait TypeRegistry {
-    /// Register a type in the registry with its type information
-    fn register_type(&mut self, type_id: TypeId, info: TypeInfo) -> Result<(), Box<dyn Error>>;
 }
 
 /// Top-level information about a reflected type.
@@ -42,7 +39,7 @@ pub struct TypeInfo {
 }
 
 /// Function type for adding a dependency to a registry
-type DependencyAdder = fn(&mut dyn TypeRegistry) -> Result<(), Box<dyn Error>>;
+type DependencyAdder = fn(&mut dyn Visit) -> Result<(), Box<dyn Error>>;
 
 /// Represents the different kinds of data structures we can reflect.
 #[derive(Debug, Clone, PartialEq)]
